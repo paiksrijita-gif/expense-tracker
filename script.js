@@ -2,6 +2,9 @@
 
 const STORAGE_KEY = 'expenses.v1';
 const SETTINGS_KEY = 'expenses.settings.v1';
+const RATES_KEY = 'expenses.rates.v1';
+const RATES_URL = 'https://open.er-api.com/v6/latest/USD';
+const RATES_MAX_AGE = 12 * 60 * 60 * 1000;
 
 const CATEGORIES = [
   { id: 'food', name: 'Food & dining', icon: '🍽️', color: '#f97316' },
@@ -18,7 +21,15 @@ const CATEGORIES = [
 ];
 const CAT = Object.fromEntries(CATEGORIES.map((c) => [c.id, c]));
 const METHODS = ['Card', 'Cash', 'Bank transfer', 'Mobile wallet', 'Other'];
-const CURRENCIES = ['USD', 'EUR', 'GBP', 'INR', 'JPY', 'CAD', 'AUD', 'SGD', 'AED', 'CHF', 'CNY'];
+// Shown at the top of every currency list; the rest follow alphabetically.
+const COMMON_CURRENCIES = ['USD', 'EUR', 'GBP', 'INR', 'JPY', 'CAD', 'AUD', 'SGD', 'AED', 'CHF', 'CNY'];
+// Approximate units per 1 USD, used until live rates load (or when offline).
+const FALLBACK_RATES = {
+  USD: 1, EUR: 0.92, GBP: 0.78, INR: 84, JPY: 150, CAD: 1.37, AUD: 1.52, SGD: 1.33, AED: 3.6725,
+  CHF: 0.86, CNY: 7.2, HKD: 7.8, NZD: 1.65, SEK: 10.5, NOK: 10.8, DKK: 6.9, PLN: 4, MXN: 18.5,
+  BRL: 5.5, ZAR: 18, KRW: 1350, THB: 34, MYR: 4.4, IDR: 15800, PHP: 57, SAR: 3.75, TRY: 34,
+  BDT: 120, PKR: 280, LKR: 300, NPR: 134,
+};
 
 const $ = (sel) => document.querySelector(sel);
 const root = document.documentElement;
@@ -47,13 +58,15 @@ function uid() {
 }
 
 // Accepts anything that came from storage or a backup file and keeps only well-formed expenses.
-function sanitize(list) {
+// Expenses saved before currencies were per-expense get `fallbackCurrency`.
+function sanitize(list, fallbackCurrency) {
   if (!Array.isArray(list)) return [];
   return list
     .filter((e) => e && Number.isFinite(+e.amount) && +e.amount > 0 && /^\d{4}-\d{2}-\d{2}$/.test(e.date))
     .map((e) => ({
       id: String(e.id || uid()),
       amount: Math.round(+e.amount * 100) / 100,
+      currency: knownCurrency(e.currency) ? e.currency : fallbackCurrency,
       category: CAT[e.category] ? e.category : 'other',
       date: e.date,
       note: String(e.note || '').slice(0, 120),
@@ -70,11 +83,22 @@ function guessCurrency() {
   return map[region] || 'USD';
 }
 
-let expenses = sanitize(load(STORAGE_KEY, []));
+// Exchange rates are stored as units per 1 USD.
+let rates = load(RATES_KEY, null);
+if (!rates || typeof rates.rates !== 'object') rates = { rates: {}, fetchedAt: 0, updatedAt: 0 };
+
+const rateOf = (code) => rates.rates[code] || FALLBACK_RATES[code];
+const knownCurrency = (code) => typeof code === 'string' && rateOf(code) > 0;
+const convert = (amount, from, to) => (from === to ? amount : (amount / rateOf(from)) * rateOf(to));
+
 const settings = Object.assign(
-  { currency: guessCurrency(), budget: 0, theme: null, lastCategory: 'food', lastMethod: 'Card' },
+  { currency: guessCurrency(), budget: 0, theme: null, lastCategory: 'food', lastMethod: 'Card', lastCurrency: null },
   load(SETTINGS_KEY, {})
 );
+if (!knownCurrency(settings.currency)) settings.currency = 'USD';
+let expenses = sanitize(load(STORAGE_KEY, []), settings.currency);
+// Write back right away so older expenses keep the currency they were given above.
+if (expenses.length) save(STORAGE_KEY, expenses);
 const now = new Date();
 const view = { year: now.getFullYear(), month: now.getMonth() };
 const filters = { q: '', cat: 'all', sort: 'date-desc' };
@@ -85,24 +109,31 @@ const saveSettings = () => save(SETTINGS_KEY, settings);
 
 /* ---------- Formatting ---------- */
 
-let money;
-let moneyShort;
-
-function setCurrency() {
-  if (!CURRENCIES.includes(settings.currency)) settings.currency = 'USD';
-  money = new Intl.NumberFormat(undefined, { style: 'currency', currency: settings.currency });
-  moneyShort = new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: settings.currency,
-    maximumFractionDigits: 0,
-  });
-  const symbol = money.formatToParts(0).find((p) => p.type === 'currency');
-  $('#currencySymbol').textContent = symbol ? symbol.value : settings.currency;
+const formatters = new Map();
+function formatter(currency, short = false) {
+  const key = currency + (short ? ':short' : '');
+  if (!formatters.has(key)) {
+    const opts = { style: 'currency', currency };
+    if (short) opts.maximumFractionDigits = 0;
+    formatters.set(key, new Intl.NumberFormat(undefined, opts));
+  }
+  return formatters.get(key);
 }
 
-const fmt = (n) => money.format(n);
-const fmtShort = (n) => moneyShort.format(n);
-const sum = (list) => list.reduce((t, e) => t + e.amount, 0);
+let currencyNames;
+try {
+  currencyNames = new Intl.DisplayNames(undefined, { type: 'currency' });
+} catch {
+  currencyNames = null;
+}
+const currencyName = (code) => currencyNames?.of(code) || code;
+
+// Totals are always shown in the main currency.
+const fmt = (n) => formatter(settings.currency).format(n);
+const fmtShort = (n) => formatter(settings.currency, true).format(n);
+const fmtIn = (n, currency) => formatter(currency).format(n);
+const toMain = (e) => convert(e.amount, e.currency, settings.currency);
+const sum = (list) => list.reduce((t, e) => t + toMain(e), 0);
 
 const pad = (n) => String(n).padStart(2, '0');
 const isoDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -150,7 +181,7 @@ function render() {
 
 function categoryTotals(items) {
   const totals = new Map();
-  for (const e of items) totals.set(e.category, (totals.get(e.category) || 0) + e.amount);
+  for (const e of items) totals.set(e.category, (totals.get(e.category) || 0) + toMain(e));
   return [...totals].map(([id, amount]) => ({ cat: CAT[id], amount })).sort((a, b) => b.amount - a.amount);
 }
 
@@ -163,6 +194,8 @@ function renderCards(items, total) {
   // Spent
   $('#spent').textContent = fmt(total);
   let spentSub = `${items.length} ${items.length === 1 ? 'expense' : 'expenses'}`;
+  const currencyCount = new Set(items.map((e) => e.currency)).size;
+  if (currencyCount > 1) spentSub += ` in ${currencyCount} currencies`;
   if (prevTotal > 0) {
     const change = ((total - prevTotal) / prevTotal) * 100;
     spentSub += ` · ${change >= 0 ? '↑' : '↓'} ${Math.abs(change).toFixed(0)}% vs ${monthName(py, pm, { month: 'short' })}`;
@@ -263,7 +296,7 @@ function renderDonut(items, total) {
 function renderBars(items) {
   const dim = daysIn(view.year, view.month);
   const perDay = new Array(dim).fill(0);
-  for (const e of items) perDay[+e.date.slice(8) - 1] += e.amount;
+  for (const e of items) perDay[+e.date.slice(8) - 1] += toMain(e);
   const max = Math.max(...perDay);
   const pos = monthPosition();
   const todayDay = pos === 0 ? new Date().getDate() : 0;
@@ -303,13 +336,14 @@ function renderList(items) {
       (!q ||
         e.note.toLowerCase().includes(q) ||
         CAT[e.category].name.toLowerCase().includes(q) ||
-        e.method.toLowerCase().includes(q))
+        e.method.toLowerCase().includes(q) ||
+        e.currency.toLowerCase() === q)
   );
   const [field, dir] = filters.sort.split('-');
   const sign = dir === 'asc' ? 1 : -1;
   rows.sort((a, b) =>
     field === 'amount'
-      ? sign * (a.amount - b.amount)
+      ? sign * (toMain(a) - toMain(b))
       : sign * (a.date.localeCompare(b.date) || a.createdAt - b.createdAt)
   );
 
@@ -367,7 +401,9 @@ function txRow(e, showDate) {
   btn.title = 'Edit expense';
   btn.innerHTML = `<span class="tx-icon" style="--c:${cat.color}">${cat.icon}</span>
     <span class="tx-main"><span class="tx-title"></span><span class="tx-sub"></span></span>
-    <span class="tx-amount">${fmt(e.amount)}</span>`;
+    <span class="tx-amount">${fmtIn(e.amount, e.currency)}${
+      e.currency === settings.currency ? '' : `<small>≈ ${fmt(toMain(e))}</small>`
+    }</span>`;
   btn.querySelector('.tx-title').textContent = e.note || cat.name;
   const sub = [e.note ? cat.name : null, e.method, showDate ? dayLabel(e.date) : null].filter(Boolean);
   btn.querySelector('.tx-sub').textContent = sub.join(' · ');
@@ -422,7 +458,33 @@ function buildForm() {
   $('#catFilter').innerHTML =
     '<option value="all">All categories</option>' +
     CATEGORIES.map((c) => `<option value="${c.id}">${c.icon} ${c.name}</option>`).join('');
-  $('#currency').innerHTML = CURRENCIES.map((c) => `<option>${c}</option>`).join('');
+  buildCurrencySelects();
+}
+
+// Fills both currency pickers: common currencies first, then every other currency we have a rate for.
+function buildCurrencySelects() {
+  const all = [...new Set([...Object.keys(FALLBACK_RATES), ...Object.keys(rates.rates)])]
+    .filter((code) => /^[A-Z]{3}$/.test(code) && knownCurrency(code))
+    .filter((code) => {
+      try {
+        formatter(code);
+        return true;
+      } catch {
+        return false; // the browser can't format it
+      }
+    });
+  const common = COMMON_CURRENCIES.filter((c) => all.includes(c));
+  const others = all.filter((c) => !common.includes(c)).sort();
+  const group = (label, codes, withNames) =>
+    `<optgroup label="${label}">${codes
+      .map((c) => `<option value="${c}">${withNames ? `${c} — ${currencyName(c)}` : c}</option>`)
+      .join('')}</optgroup>`;
+  for (const [sel, withNames] of [['#currency', true], ['#expCurrency', false]]) {
+    const el = $(sel);
+    const value = el.value;
+    el.innerHTML = group('Common', common, withNames) + group('All currencies', others, withNames);
+    if (value) el.value = value;
+  }
 }
 
 function defaultDate() {
@@ -435,6 +497,10 @@ function openExpense(id = null) {
   editingId = e ? e.id : null;
   $('#dialogTitle').textContent = e ? 'Edit expense' : 'Add expense';
   form.amount.value = e ? e.amount : '';
+  $('#expCurrency').value = e
+    ? e.currency
+    : knownCurrency(settings.lastCurrency) ? settings.lastCurrency : settings.currency;
+  updateConvertHint();
   const category = e ? e.category : CAT[settings.lastCategory] ? settings.lastCategory : 'food';
   form.querySelector(`input[name="category"][value="${category}"]`).checked = true;
   form.date.value = e ? e.date : defaultDate();
@@ -445,6 +511,28 @@ function openExpense(id = null) {
   expenseDialog.showModal();
   form.amount.focus();
 }
+
+// Under the amount, shows what a foreign-currency expense is worth in the main currency.
+function updateConvertHint() {
+  const hint = $('#convertHint');
+  const currency = $('#expCurrency').value;
+  const amount = parseFloat(form.amount.value);
+  if (currency === settings.currency) {
+    hint.hidden = true;
+    return;
+  }
+  hint.textContent =
+    amount > 0
+      ? `${currencyName(currency)} · ≈ ${fmt(convert(amount, currency, settings.currency))} at today's rate`
+      : `${currencyName(currency)} · counted in ${settings.currency} in your totals`;
+  hint.hidden = false;
+}
+
+form.amount.addEventListener('input', updateConvertHint);
+$('#expCurrency').addEventListener('change', () => {
+  updateConvertHint();
+  form.amount.focus();
+});
 
 function showFormError(message) {
   const el = $('#formError');
@@ -460,17 +548,20 @@ form.addEventListener('submit', (ev) => {
   const date = form.date.value;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return showFormError('Pick a date.');
   const category = form.querySelector('input[name="category"]:checked')?.value || 'other';
-  const data = { amount, category, date, method: $('#method').value, note: form.note.value.trim() };
+  const currency = $('#expCurrency').value;
+  if (!knownCurrency(currency)) return showFormError('Pick a currency.');
+  const data = { amount, currency, category, date, method: $('#method').value, note: form.note.value.trim() };
 
   if (editingId) {
     Object.assign(expenses.find((x) => x.id === editingId), data);
     toast('Expense updated');
   } else {
     expenses.push({ id: uid(), createdAt: Date.now(), ...data });
-    toast(`Added ${fmt(amount)} for ${CAT[category].name}`);
+    toast(`Added ${fmtIn(amount, currency)} for ${CAT[category].name}`);
   }
   settings.lastCategory = category;
   settings.lastMethod = data.method;
+  settings.lastCurrency = currency;
   saveSettings();
   persist();
 
@@ -508,15 +599,49 @@ const settingsDialog = $('#settingsDialog');
 function openSettings() {
   $('#currency').value = settings.currency;
   $('#budget').value = settings.budget > 0 ? settings.budget : '';
+  renderRatesInfo();
   settingsDialog.showModal();
 }
 
+// Switching the main currency re-counts every total in it, and carries the budget over at today's rate.
 $('#currency').addEventListener('change', (ev) => {
+  const previous = settings.currency;
   settings.currency = ev.target.value;
+  if (settings.budget > 0) {
+    settings.budget = Math.round(convert(settings.budget, previous, settings.currency));
+    $('#budget').value = settings.budget;
+  }
   saveSettings();
-  setCurrency();
+  renderRatesInfo();
   render();
 });
+
+function renderRatesInfo() {
+  $('#budgetCurrency').textContent = settings.currency;
+  const info = $('#ratesInfo');
+  if (rates.updatedAt) {
+    const when = new Date(rates.updatedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    info.innerHTML = `Exchange rates from ${when}. <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener">Rates by Exchange Rate API</a>`;
+  } else {
+    info.textContent = 'Using approximate built-in exchange rates until today’s rates load.';
+  }
+}
+
+async function refreshRates() {
+  if (Date.now() - rates.fetchedAt < RATES_MAX_AGE) return;
+  try {
+    const res = await fetch(RATES_URL);
+    const data = await res.json();
+    if (data.result !== 'success' || !data.rates || data.rates.USD !== 1) throw new Error('Bad rates');
+    rates = { rates: data.rates, fetchedAt: Date.now(), updatedAt: data.time_last_update_unix * 1000 };
+    save(RATES_KEY, rates);
+    buildCurrencySelects();
+    renderRatesInfo();
+    render();
+  } catch {
+    // Offline or the service is down: keep the cached or built-in rates.
+  }
+}
 
 $('#budget').addEventListener('input', (ev) => {
   settings.budget = Math.max(0, parseFloat(ev.target.value) || 0);
@@ -545,8 +670,16 @@ $('#exportCsv').addEventListener('click', () => {
   if (!expenses.length) return toast('No expenses to export yet');
   const sorted = [...expenses].sort((a, b) => a.date.localeCompare(b.date));
   const lines = [
-    ['Date', 'Category', 'Amount', 'Currency', 'Paid with', 'Note'],
-    ...sorted.map((e) => [e.date, CAT[e.category].name, e.amount.toFixed(2), settings.currency, e.method, e.note]),
+    ['Date', 'Category', 'Amount', 'Currency', `Amount in ${settings.currency}`, 'Paid with', 'Note'],
+    ...sorted.map((e) => [
+      e.date,
+      CAT[e.category].name,
+      e.amount.toFixed(2),
+      e.currency,
+      toMain(e).toFixed(2),
+      e.method,
+      e.note,
+    ]),
   ];
   download(`expenses-${isoDate(new Date())}.csv`, lines.map((r) => r.map(csvCell).join(',')).join('\n'), 'text/csv');
   toast(`Exported ${expenses.length} expenses`);
@@ -555,7 +688,7 @@ $('#exportCsv').addEventListener('click', () => {
 $('#backupJson').addEventListener('click', () => {
   const backup = {
     app: 'expense-tracker',
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     settings: { currency: settings.currency, budget: settings.budget },
     expenses,
@@ -570,15 +703,16 @@ $('#restoreJson').addEventListener('change', async (ev) => {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
-    const restored = sanitize(Array.isArray(data) ? data : data.expenses);
+    // Older backups have one currency for everything, kept in their settings.
+    const backupCurrency = knownCurrency(data.settings?.currency) ? data.settings.currency : settings.currency;
+    const restored = sanitize(Array.isArray(data) ? data : data.expenses, backupCurrency);
     if (!restored.length) return toast('That file has no expenses in it');
     if (expenses.length && !confirm(`Replace your ${expenses.length} expenses with ${restored.length} from the backup?`)) return;
     expenses = restored;
     if (data.settings) {
-      if (CURRENCIES.includes(data.settings.currency)) settings.currency = data.settings.currency;
+      settings.currency = backupCurrency;
       if (+data.settings.budget >= 0) settings.budget = +data.settings.budget;
       saveSettings();
-      setCurrency();
       openSettings();
     }
     persist();
@@ -610,7 +744,10 @@ $('#clearAll').addEventListener('click', () => {
 });
 
 function addSampleData() {
-  const scale = { INR: 50, JPY: 100, CNY: 7, AED: 3.6 }[settings.currency] || 1;
+  // Amounts are written in USD terms and scaled to the main currency; trip expenses stay in a foreign one.
+  const main = settings.currency;
+  const scale = main === 'USD' ? 1 : Math.max(1, Math.round(convert(1, 'USD', main)));
+  const abroad = main === 'EUR' ? 'GBP' : 'EUR';
   const template = [
     [1, 'rent', 1200, 'Bank transfer', 'Monthly rent'],
     [2, 'groceries', 64.3, 'Card', 'Weekly groceries'],
@@ -629,7 +766,8 @@ function addSampleData() {
     [21, 'food', 9.4, 'Cash', 'Coffee & pastry'],
     [23, 'groceries', 61.2, 'Card', 'Weekly groceries'],
     [25, 'entertainment', 36, 'Card', 'Concert tickets'],
-    [27, 'travel', 140, 'Card', 'Weekend train tickets'],
+    [26, 'travel', 140, 'Card', 'Weekend train tickets', true],
+    [27, 'food', 34, 'Card', 'Dinner on the trip', true],
     [28, 'other', 20, 'Cash', 'Gift for a friend'],
   ];
   const today = new Date();
@@ -639,13 +777,14 @@ function addSampleData() {
     const y = d.getFullYear();
     const m = d.getMonth();
     const lastDay = back === 0 ? today.getDate() : daysIn(y, m);
-    template.forEach(([day, category, amount, method, note], i) => {
+    template.forEach(([day, category, amount, method, note, foreign], i) => {
       if (day > lastDay) return;
       const wobble = category === 'rent' ? 1 : 0.8 + ((i * 37 + back * 17) % 40) / 100;
       added.push({
         id: uid(),
         createdAt: Date.now() + added.length,
-        amount: Math.round(amount * wobble * scale * 100) / 100,
+        amount: Math.round(amount * wobble * (foreign ? 1 : scale) * 100) / 100,
+        currency: foreign ? abroad : main,
         category,
         date: `${monthKey(y, m)}-${pad(day)}`,
         method,
@@ -783,5 +922,5 @@ document.addEventListener('keydown', (ev) => {
 
 buildForm();
 applyTheme();
-setCurrency();
 render();
+refreshRates();

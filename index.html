@@ -96,13 +96,14 @@
         <button type="button" class="icon-btn" data-close aria-label="Close">✕</button>
       </header>
       <div class="dialog-body">
-        <label class="field">
-          <span>Amount</span>
+        <div class="field">
+          <label for="amount">Amount</label>
           <div class="amount-input">
-            <span id="currencySymbol">$</span>
+            <select id="expCurrency" aria-label="Currency of this expense"></select>
             <input id="amount" name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00" required>
           </div>
-        </label>
+          <p id="convertHint" class="hint" hidden></p>
+        </div>
         <fieldset class="field">
           <legend>Category</legend>
           <div id="catPicker" class="cat-picker"></div>
@@ -140,14 +141,19 @@
     <div class="dialog-body">
       <div class="row">
         <label class="field">
-          <span>Currency</span>
+          <span>Main currency</span>
           <select id="currency"></select>
         </label>
         <label class="field">
-          <span>Monthly budget</span>
+          <span>Monthly budget (<span id="budgetCurrency"></span>)</span>
           <input id="budget" type="number" inputmode="decimal" min="0" step="1" placeholder="No budget">
         </label>
       </div>
+      <p class="muted small">
+        Each expense keeps the currency you paid in. Totals, charts and your budget are shown in your
+        main currency, converted at the latest exchange rate.
+      </p>
+      <p id="ratesInfo" class="muted small"></p>
       <div class="settings-group">
         <h3>Your data</h3>
         <p class="muted small">Everything is saved in this browser only. Download a backup to move it to another device.</p>
