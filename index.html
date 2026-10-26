@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Expense Tracker</title>
+  <meta name="description" content="Track your spending, set a monthly budget and see where your money goes.">
+  <meta name="theme-color" content="#4f46e5">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💸</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">💸</span>
+      <h1>Expenses</h1>
+    </div>
+    <nav class="month-nav" aria-label="Month">
+      <button id="prevMonth" class="icon-btn" aria-label="Previous month">‹</button>
+      <button id="monthLabel" class="month-label" title="Go to this month"></button>
+      <button id="nextMonth" class="icon-btn" aria-label="Next month">›</button>
+    </nav>
+    <div class="actions">
+      <button id="themeBtn" class="icon-btn" aria-label="Toggle light or dark theme">◐</button>
+      <button id="settingsBtn" class="icon-btn" aria-label="Settings">⚙︎</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="cards" aria-label="Summary">
+      <article class="card">
+        <p class="card-label">Spent</p>
+        <p class="card-value" id="spent"></p>
+        <p class="card-sub" id="spentSub"></p>
+      </article>
+      <article class="card" id="budgetCard">
+        <p class="card-label">Budget left</p>
+        <p class="card-value" id="budgetLeft"></p>
+        <div class="progress" aria-hidden="true"><div id="budgetBar"></div></div>
+        <p class="card-sub" id="budgetSub"></p>
+      </article>
+      <article class="card">
+        <p class="card-label">Daily average</p>
+        <p class="card-value" id="dailyAvg"></p>
+        <p class="card-sub" id="dailySub"></p>
+      </article>
+      <article class="card">
+        <p class="card-label">Top category</p>
+        <p class="card-value" id="topCat"></p>
+        <p class="card-sub" id="topCatSub"></p>
+      </article>
+    </section>
+
+    <section class="charts">
+      <article class="panel">
+        <h2>By category</h2>
+        <div class="donut-wrap">
+          <svg id="donut" viewBox="0 0 120 120" role="img" aria-label="Spending by category"></svg>
+          <ul id="legend" class="legend"></ul>
+        </div>
+      </article>
+      <article class="panel bars-panel">
+        <div class="panel-head">
+          <h2>Day by day</h2>
+          <p id="barsNote" class="muted small"></p>
+        </div>
+        <div id="bars" class="bars" role="img" aria-label="Spending per day"></div>
+      </article>
+    </section>
+
+    <section class="panel list-panel">
+      <div class="panel-head">
+        <h2>Transactions</h2>
+        <p id="listSummary" class="muted small"></p>
+      </div>
+      <div class="filters">
+        <input id="search" type="search" placeholder="Search notes, categories…" aria-label="Search">
+        <select id="catFilter" aria-label="Filter by category"></select>
+        <select id="sortBy" aria-label="Sort">
+          <option value="date-desc">Newest first</option>
+          <option value="date-asc">Oldest first</option>
+          <option value="amount-desc">Highest amount</option>
+          <option value="amount-asc">Lowest amount</option>
+        </select>
+      </div>
+      <div id="list"></div>
+    </section>
+  </main>
+
+  <button id="addBtn" class="fab"><span aria-hidden="true">＋</span> Add expense</button>
+
+  <dialog id="expenseDialog" aria-labelledby="dialogTitle">
+    <form id="expenseForm" novalidate>
+      <header class="dialog-head">
+        <h2 id="dialogTitle">Add expense</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close">✕</button>
+      </header>
+      <div class="dialog-body">
+        <label class="field">
+          <span>Amount</span>
+          <div class="amount-input">
+            <span id="currencySymbol">$</span>
+            <input id="amount" name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00" required>
+          </div>
+        </label>
+        <fieldset class="field">
+          <legend>Category</legend>
+          <div id="catPicker" class="cat-picker"></div>
+        </fieldset>
+        <div class="row">
+          <label class="field">
+            <span>Date</span>
+            <input id="date" name="date" type="date" required>
+          </label>
+          <label class="field">
+            <span>Paid with</span>
+            <select id="method" name="method"></select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Note <em class="muted">(optional)</em></span>
+          <input id="note" name="note" type="text" maxlength="120" placeholder="e.g. Lunch with the team" autocomplete="off">
+        </label>
+        <p id="formError" class="form-error" role="alert" hidden></p>
+      </div>
+      <footer class="dialog-foot">
+        <button type="button" id="deleteBtn" class="btn danger" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog" aria-labelledby="settingsTitle">
+    <header class="dialog-head">
+      <h2 id="settingsTitle">Settings</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Close">✕</button>
+    </header>
+    <div class="dialog-body">
+      <div class="row">
+        <label class="field">
+          <span>Currency</span>
+          <select id="currency"></select>
+        </label>
+        <label class="field">
+          <span>Monthly budget</span>
+          <input id="budget" type="number" inputmode="decimal" min="0" step="1" placeholder="No budget">
+        </label>
+      </div>
+      <div class="settings-group">
+        <h3>Your data</h3>
+        <p class="muted small">Everything is saved in this browser only. Download a backup to move it to another device.</p>
+        <div class="btn-row">
+          <button id="exportCsv" class="btn">Export CSV</button>
+          <button id="backupJson" class="btn">Download backup</button>
+          <label class="btn file-btn">Restore backup<input id="restoreJson" type="file" accept="application/json,.json" hidden></label>
+        </div>
+        <div class="btn-row">
+          <button id="sampleData" class="btn">Add sample data</button>
+          <button id="clearAll" class="btn danger">Delete all expenses</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>
