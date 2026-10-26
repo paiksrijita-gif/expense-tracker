@@ -10,7 +10,7 @@ A simple expense manager built with plain HTML, CSS and JavaScript — no build 
 - **Monthly budget** that warns at 80% and turns red when you go over
 - **Charts:** spending by category (click a category to filter) and spending per day
 - **Search, filter and sort** your transactions
-- **Any currency, per expense:** pick the currency you actually paid in (160+ supported). Totals, charts and the budget are shown in your main currency, converted with daily exchange rates from [Exchange Rate API](https://www.exchangerate-api.com) (built-in approximate rates are used offline)
+- **Any currency, per expense:** pick the currency you actually paid in (160+ supported). The whole dashboard (totals, charts and the budget) switches to the currency you pick when adding an expense, and other currencies are converted with daily exchange rates from [Exchange Rate API](https://www.exchangerate-api.com) (built-in approximate rates are used offline)
 - **Your data stays in your browser.** Export to CSV, download a JSON backup and restore it on another device
 - **Light and dark theme**, works on phones and desktops
 - Press `n` to add an expense

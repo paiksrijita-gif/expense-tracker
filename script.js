@@ -92,7 +92,7 @@ const knownCurrency = (code) => typeof code === 'string' && rateOf(code) > 0;
 const convert = (amount, from, to) => (from === to ? amount : (amount / rateOf(from)) * rateOf(to));
 
 const settings = Object.assign(
-  { currency: guessCurrency(), budget: 0, theme: null, lastCategory: 'food', lastMethod: 'Card', lastCurrency: null },
+  { currency: guessCurrency(), budget: 0, theme: null, lastCategory: 'food', lastMethod: 'Card' },
   load(SETTINGS_KEY, {})
 );
 if (!knownCurrency(settings.currency)) settings.currency = 'USD';
@@ -497,9 +497,7 @@ function openExpense(id = null) {
   editingId = e ? e.id : null;
   $('#dialogTitle').textContent = e ? 'Edit expense' : 'Add expense';
   form.amount.value = e ? e.amount : '';
-  $('#expCurrency').value = e
-    ? e.currency
-    : knownCurrency(settings.lastCurrency) ? settings.lastCurrency : settings.currency;
+  $('#expCurrency').value = e ? e.currency : settings.currency;
   updateConvertHint();
   const category = e ? e.category : CAT[settings.lastCategory] ? settings.lastCategory : 'food';
   form.querySelector(`input[name="category"][value="${category}"]`).checked = true;
@@ -512,23 +510,18 @@ function openExpense(id = null) {
   form.amount.focus();
 }
 
-// Under the amount, shows what a foreign-currency expense is worth in the main currency.
+// Under the amount, warns that saving in another currency switches the dashboard to it.
 function updateConvertHint() {
   const hint = $('#convertHint');
   const currency = $('#expCurrency').value;
-  const amount = parseFloat(form.amount.value);
   if (currency === settings.currency) {
     hint.hidden = true;
     return;
   }
-  hint.textContent =
-    amount > 0
-      ? `${currencyName(currency)} · ≈ ${fmt(convert(amount, currency, settings.currency))} at today's rate`
-      : `${currencyName(currency)} · counted in ${settings.currency} in your totals`;
+  hint.textContent = `${currencyName(currency)} · your dashboard will switch from ${settings.currency} to ${currency}`;
   hint.hidden = false;
 }
 
-form.amount.addEventListener('input', updateConvertHint);
 $('#expCurrency').addEventListener('change', () => {
   updateConvertHint();
   form.amount.focus();
@@ -552,16 +545,20 @@ form.addEventListener('submit', (ev) => {
   if (!knownCurrency(currency)) return showFormError('Pick a currency.');
   const data = { amount, currency, category, date, method: $('#method').value, note: form.note.value.trim() };
 
+  // The dashboard follows the currency picked here: always when adding, and when an edit changes it.
+  let switched = false;
   if (editingId) {
-    Object.assign(expenses.find((x) => x.id === editingId), data);
-    toast('Expense updated');
+    const existing = expenses.find((x) => x.id === editingId);
+    switched = existing.currency !== currency && setMainCurrency(currency);
+    Object.assign(existing, data);
   } else {
+    switched = setMainCurrency(currency);
     expenses.push({ id: uid(), createdAt: Date.now(), ...data });
-    toast(`Added ${fmtIn(amount, currency)} for ${CAT[category].name}`);
   }
+  const message = editingId ? 'Expense updated' : `Added ${fmtIn(amount, currency)} for ${CAT[category].name}`;
+  toast(switched ? `${message} · dashboard now in ${currency}` : message);
   settings.lastCategory = category;
   settings.lastMethod = data.method;
-  settings.lastCurrency = currency;
   saveSettings();
   persist();
 
@@ -604,14 +601,19 @@ function openSettings() {
 }
 
 // Switching the main currency re-counts every total in it, and carries the budget over at today's rate.
-$('#currency').addEventListener('change', (ev) => {
+// Returns whether anything changed.
+function setMainCurrency(code) {
+  if (code === settings.currency || !knownCurrency(code)) return false;
   const previous = settings.currency;
-  settings.currency = ev.target.value;
-  if (settings.budget > 0) {
-    settings.budget = Math.round(convert(settings.budget, previous, settings.currency));
-    $('#budget').value = settings.budget;
-  }
+  settings.currency = code;
+  if (settings.budget > 0) settings.budget = Math.round(convert(settings.budget, previous, code));
   saveSettings();
+  return true;
+}
+
+$('#currency').addEventListener('change', (ev) => {
+  setMainCurrency(ev.target.value);
+  $('#budget').value = settings.budget > 0 ? settings.budget : '';
   renderRatesInfo();
   render();
 });
